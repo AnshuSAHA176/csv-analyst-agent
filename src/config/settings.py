@@ -3,6 +3,8 @@
 from pathlib import Path
 import os
 from dotenv import load_dotenv
+import cloudinary
+
 load_dotenv()
 
 
@@ -142,3 +144,9 @@ SIMPLE_JWT = {
     "REFRESH_TOKEN_LIFETIME": timedelta(days=1),
     "AUTH_HEADER_TYPES": ("Bearer",),
 }
+
+cloudinary.config(
+    cloud_name=os.environ.get("CLOUDINARY_CLOUD_NAME"),
+    api_key=os.environ.get("CLOUDINARY_API_KEY"),
+    api_secrect=os.environ.get("CLOUDINARY_API_SECRET"),
+)
