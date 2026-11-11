@@ -43,3 +43,20 @@ class Dataset(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class DatasetProfile(models.Model):
+    dataset = models.OneToOneField(
+        Dataset, on_delete=models.CASCADE, related_name="profile"
+    )
+    row_count = models.PositiveBigIntegerField(default=0)
+    column_count = models.PositiveIntegerField(default=0)
+    duplicated_rows = models.PositiveBigIntegerField(default=0)
+    missing_values = models.JSONField(default=dict)
+    column_details = models.JSONField(default=dict)
+    profiled_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["profiled_at"])]
+    def __str__(self):
+        return f"data_set:- {self.dataset.name}"
