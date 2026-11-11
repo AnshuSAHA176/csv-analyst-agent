@@ -32,9 +32,13 @@ class DatasetUploadSerializer(serializers.ModelSerializer):
             user=request.user,
             file_size=file.size
         )
-
 class GetDataSetSerializer(serializers.ModelSerializer):
-    
     class Meta:
-        model=Dataset
-        fields="__all__"
+        model = Dataset
+        fields = [
+            "id",
+            "name",
+            "file_size",
+            "status",
+            "created_at",
+        ]
