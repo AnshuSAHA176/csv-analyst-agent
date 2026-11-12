@@ -1,0 +1,16 @@
+order_id,order_date,customer_id,product,category,quantity,unit_price,payment_status,region
+ORD-1001,2026-10-01,C001,Laptop,Electronics,1,65000,paid,East
+ORD-1002,2026-10-01,C002,Headphones,Electronics,2,2500,paid,North
+ORD-1003,2026-10-02,C003,Office Chair,Furniture,1,8500,paid,West
+ORD-1004,2026-10-02,C001,Keyboard,Electronics,3,1200,failed,East
+ORD-1005,2026-10-03,C004,Desk,Furniture,1,12000,paid,South
+ORD-1006,2026-10-03,C005,Mouse,Electronics,2,800,paid,East
+ORD-1007,2026-10-04,C006,Monitor,Electronics,1,18000,pending,North
+ORD-1008,2026-10-04,C002,Headphones,Electronics,1,2500,paid,North
+ORD-1009,2026-10-05,C007,Bookshelf,Furniture,1,5500,paid,West
+ORD-1010,2026-10-05,C008,Laptop,Electronics,1,62000,failed,South
+ORD-1011,2026-10-06,C009,Desk,Furniture,2,12000,paid,East
+ORD-1012,2026-10-06,C003,Mouse,Electronics,1,800,paid,West
+ORD-1013,2026-10-07,C010,Office Chair,Furniture,1,8500,pending,North
+ORD-1014,2026-10-07,C004,Laptop,Electronics,1,65000,paid,South
+ORD-1015,2026-10-08,C011,Keyboard,Electronics,2,1200,paid,East
