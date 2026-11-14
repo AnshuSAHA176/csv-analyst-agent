@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import DataSetView,DataSetDetailView
+from .views import DataSetView,DataSetDetailView,DataSetProfilingView
 
 urlpatterns=[
     path("",DataSetView.as_view(),name="datasets"),

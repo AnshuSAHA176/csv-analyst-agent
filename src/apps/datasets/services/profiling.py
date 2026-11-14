@@ -28,29 +28,43 @@ def profile_csv(file_path) -> dict:
 
 @shared_task(bind=True, max_retries=3, ignore_result=True)
 def profile_dataset(self, dataset_id: str):
+    dataset = None
+
     try:
         dataset = Dataset.objects.get(id=dataset_id)
+
         dataset.status = Dataset.StatusChoices.PROCESSING
         dataset.save(update_fields=["status"])
-        csv_file_url = dataset.file.url.replace("http://", "https://")
-        response = requests.get(csv_file_url, timeout=10)
-        with tempfile.NamedTemporaryFile(prefix=".csv") as temp:
+
+        with tempfile.NamedTemporaryFile(suffix=".csv") as temp:
+            response = requests.get(dataset.file.url, timeout=(5, 30), stream=True)
+            response.raise_for_status()
+
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    temp.write(chunk)
+
             temp.flush()
-            temp.write(response.content)
-            profileing_data = profile_csv(file_path=temp.name)
-            DatasetProfile.objects.create(
-                dataset=dataset,
-                row_count=profileing_data.get("row_count"),
-                column_count=profileing_data.get("column_count"),
-                duplicated_rows=profileing_data.get("duplicate_rows"),
-                missing_values=profileing_data.get("missing_values"),
-                column_details=profileing_data.get("column_details"),
-            )
+
+            profiling_data = profile_csv(temp.name)
+
+        DatasetProfile.objects.update_or_create(
+            dataset=dataset,
+            defaults={
+                "row_count": profiling_data["row_count"],
+                "column_count": profiling_data["column_count"],
+                "duplicated_rows": profiling_data["duplicate_rows"],
+                "missing_values": profiling_data["missing_values"],
+                "column_details": profiling_data["column_details"],
+            },
+        )
+
         dataset.status = Dataset.StatusChoices.READY
         dataset.save(update_fields=["status"])
+
     except Exception as exc:
 
-        if self.request.retries >= self.max_retries:
+        if dataset is not None and self.request.retries >= self.max_retries:
             dataset.status = Dataset.StatusChoices.FAILED
             dataset.save(update_fields=["status"])
 

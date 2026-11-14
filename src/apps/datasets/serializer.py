@@ -1,6 +1,8 @@
 from rest_framework import serializers
-from .models import Dataset
+from .models import Dataset,DatasetProfile
 import os
+from django.db import transaction
+from .services.profiling import profile_dataset
 
 
 class DatasetUploadSerializer(serializers.ModelSerializer):
@@ -11,27 +13,25 @@ class DatasetUploadSerializer(serializers.ModelSerializer):
 
     def validate_file(self, file):
         if file.size > 10 * 1024 * 1024:
-            raise serializers.ValidationError(
-                "Maximum file size is 10 MB."
-            )
+            raise serializers.ValidationError("Maximum file size is 10 MB.")
 
         if os.path.splitext(file.name)[1].lower() != ".csv":
-            raise serializers.ValidationError(
-                "Only CSV files are allowed."
-            )
+            raise serializers.ValidationError("Only CSV files are allowed.")
 
         return file
 
     def create(self, validated_data):
+
         request = self.context["request"]
 
         file = validated_data["file"]
+        with transaction.atomic():
+            dataset = Dataset.objects.create(
+                **validated_data, user=request.user, file_size=file.size
+            )
+            transaction.on_commit(lambda: profile_dataset.delay(dataset_id=dataset.id))
+        return dataset
 
-        return Dataset.objects.create(
-            **validated_data,
-            user=request.user,
-            file_size=file.size
-        )
 class GetDataSetSerializer(serializers.ModelSerializer):
     class Meta:
         model = Dataset
@@ -42,3 +42,8 @@ class GetDataSetSerializer(serializers.ModelSerializer):
             "status",
             "created_at",
         ]
+
+class DataSetProfilingSerializer(serializers.ModelSerializer):
+    class Mete:
+        model = DatasetProfile
+        fileds="__all__"
