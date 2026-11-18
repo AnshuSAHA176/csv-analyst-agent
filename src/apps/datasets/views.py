@@ -1,17 +1,21 @@
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from .serializer import DatasetUploadSerializer, GetDataSetSerializer,DataSetProfilingSerializer
-from .models import Dataset,DatasetProfile
+from .serializer import (
+    DatasetUploadSerializer,
+    GetDataSetSerializer,
+    DataSetProfilingSerializer,
+)
+from .models import Dataset, DatasetProfile
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 import cloudinary.uploader
 from rest_framework.permissions import BasePermission
 
+
 class IsDatasetOwner(BasePermission):
     def has_object_permission(self, request, view, obj):
         return request.user == obj.dataset.user
-
 
 
 class DataSetView(APIView):
@@ -59,11 +63,16 @@ class DataSetDetailView(APIView):
 
 
 class DataSetProfilingView(APIView):
-    permission_classes=[IsAuthenticated]
-    def get(self,request,dataset_id):
-        dataset_profile = get_object_or_404(DatasetProfile,dataset_id=dataset_id)
-        self.check_object_permissions(request=request,obj=dataset_profile)
-        serializer=DataSetProfilingSerializer(dataset_profile)
-        return Response(
-            serializer.data
+    permission_classes = [IsAuthenticated,IsDatasetOwner]
+
+    def get(self, request, dataset_id):
+        dataset_profile = get_object_or_404(
+            DatasetProfile.objects.select_related("dataset"),
+            dataset_id=dataset_id,
+            
         )
+
+        self.check_object_permissions(request=request,obj=dataset_profile)
+        serializer = DataSetProfilingSerializer(dataset_profile)
+
+        return Response(serializer.data)

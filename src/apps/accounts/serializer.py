@@ -1,6 +1,8 @@
 from adrf import serializers
 from .models import User
 from django.contrib.auth import authenticate
+from rest_framework.exceptions import ValidationError
+
 
 class RegisterSerializer(serializers.ModelSerializer):
 
@@ -19,7 +21,7 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     def validate_role(self, value):
         if value == User.RoleChoices.BOSS:
-            raise serializers.ValidationError(
+            raise ValidationError(
                 "You cannot register as a boss."
             )
         return value

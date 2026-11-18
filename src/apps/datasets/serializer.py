@@ -44,6 +44,6 @@ class GetDataSetSerializer(serializers.ModelSerializer):
         ]
 
 class DataSetProfilingSerializer(serializers.ModelSerializer):
-    class Mete:
+    class Meta:
         model = DatasetProfile
-        fileds="__all__"
+        fields="__all__"

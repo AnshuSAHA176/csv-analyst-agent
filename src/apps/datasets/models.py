@@ -58,5 +58,34 @@ class DatasetProfile(models.Model):
 
     class Meta:
         indexes = [models.Index(fields=["profiled_at"])]
+
+    def __str__(self):
+        return f"data_set:- {self.dataset.name}"
+
+
+class DatasetCleaningJob(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "PENDING"
+        PROCESSING = "PROCESSING"
+        COMPLETED = "COMPLETED"
+        FAILED = "FAILED"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    dataset = models.ForeignKey(
+        Dataset, on_delete=models.CASCADE, related_name="cleaning_jobs"
+    )
+
+    operations = models.JSONField(default=dict)
+    status = models.CharField(
+        max_length=20, choices=Status.choices, default=Status.PENDING
+    )
+
+    cleaned_file = CloudinaryField(resource_type="raw", null=True, blank=True)
+
+    report = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
     def __str__(self):
         return f"data_set:- {self.dataset.name}"
