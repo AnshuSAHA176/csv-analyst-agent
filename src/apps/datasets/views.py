@@ -5,6 +5,7 @@ from .serializer import (
     DatasetUploadSerializer,
     GetDataSetSerializer,
     DataSetProfilingSerializer,
+    DataSetCleaningSerializer,
 )
 from .models import Dataset, DatasetProfile
 from django.shortcuts import get_object_or_404
@@ -17,6 +18,9 @@ class IsDatasetOwner(BasePermission):
     def has_object_permission(self, request, view, obj):
         return request.user == obj.dataset.user
 
+class IsDataCleaingOwner(BasePermission):
+    def has_object_permission(self, request, view, obj):
+        return request.user == obj.user
 
 class DataSetView(APIView):
     permission_classes = [IsAuthenticated]
@@ -63,16 +67,40 @@ class DataSetDetailView(APIView):
 
 
 class DataSetProfilingView(APIView):
-    permission_classes = [IsAuthenticated,IsDatasetOwner]
+    permission_classes = [IsAuthenticated, IsDatasetOwner]
 
     def get(self, request, dataset_id):
         dataset_profile = get_object_or_404(
             DatasetProfile.objects.select_related("dataset"),
             dataset_id=dataset_id,
-            
         )
 
-        self.check_object_permissions(request=request,obj=dataset_profile)
+        self.check_object_permissions(request=request, obj=dataset_profile)
         serializer = DataSetProfilingSerializer(dataset_profile)
 
         return Response(serializer.data)
+
+
+class DataSetCleaingView(APIView):
+    permission_classes = [IsAuthenticated, IsDataCleaingOwner]
+
+    def post(self, request):
+        dataset_id = request.data.get("dataset")
+        if not dataset_id:
+            return Response(
+                {"error": "please provide the dataset_id"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        dataset = get_object_or_404(
+            Dataset.objects.select_related("user"), id=dataset_id
+        )
+        self.check_object_permissions(request=request, obj=dataset)
+        serializer = DataSetCleaningSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        job = serializer.save()
+        return Response(
+            {
+                "job_id": job.id,
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )

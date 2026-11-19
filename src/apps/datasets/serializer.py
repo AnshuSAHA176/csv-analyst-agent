@@ -1,8 +1,9 @@
 from rest_framework import serializers
-from .models import Dataset,DatasetProfile
+from .models import Dataset, DatasetProfile, DatasetCleaningJob
 import os
 from django.db import transaction
 from .services.profiling import profile_dataset
+from .services.taskes import clean_dataset_task
 
 
 class DatasetUploadSerializer(serializers.ModelSerializer):
@@ -32,6 +33,7 @@ class DatasetUploadSerializer(serializers.ModelSerializer):
             transaction.on_commit(lambda: profile_dataset.delay(dataset_id=dataset.id))
         return dataset
 
+
 class GetDataSetSerializer(serializers.ModelSerializer):
     class Meta:
         model = Dataset
@@ -43,7 +45,27 @@ class GetDataSetSerializer(serializers.ModelSerializer):
             "created_at",
         ]
 
+
 class DataSetProfilingSerializer(serializers.ModelSerializer):
     class Meta:
         model = DatasetProfile
-        fields="__all__"
+        fields = "__all__"
+
+
+class DataSetCleaningSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DatasetCleaningJob
+        fields = ["dataset", "operations"]
+
+    def validate(self, attrs):
+        if not isinstance(attrs.get("operations"), dict):
+            raise serializers.ValidationError("operation must be a dict")
+        return attrs
+
+    def create(self, validated_data):
+        with transaction.atomic():
+            cleaning_job = DatasetCleaningJob.objects.create(**validated_data)
+            transaction.on_commit(
+                lambda: clean_dataset_task.delay(cleaning_job_id=cleaning_job.id)
+            )
+        return cleaning_job
