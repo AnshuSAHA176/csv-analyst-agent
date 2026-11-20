@@ -19,3 +19,6 @@ class InvestigationState(TypedDict):
     final_report: dict[str, Any]
 
     errors: list[str]
+    current_code: str
+    retry_count: int
+    last_error: str | None
