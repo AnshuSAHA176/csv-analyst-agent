@@ -1,199 +1,220 @@
-# In agent/nodes.py
+import json
+import logging
 from langchain_core.prompts import ChatPromptTemplate
+
 from .state import InvestigationState
-from .schemas import GeneratedScript
+from .schemas import VerificationReport, FinalInvestigationReport
 from .llm import get_llm
+from .runner.runner_manager import run_analysis
+
+logger = logging.getLogger(__name__)
+
+
+# --- 1. PROMPTS ---
 
 CODE_GEN_PROMPT = ChatPromptTemplate.from_messages([
     (
         "system",
-        """
-You are an expert Python data engineer writing analysis functions for a sandboxed runner.
+        """You are a Python data engineer writing code for a sandboxed runner.
 
-## STRICT EXECUTION CONTRACT
-1. Define a single entry-point function with this exact signature:
-   `def analyze(input_data: dict) -> dict:`
-2. Read the CSV path dynamically via: `dataset_path = input_data["dataset_path"]`
-3. Return a JSON-serializable Python `dict` with this exact structure:
-   {{
-     "metrics": {{ ... }},       // Exact computed numbers, grouped records, or test stats
-     "sample_size": <int>,      // Integer count of non-null rows evaluated
-     "summary": "<string>"      // Objective factual summary of the computed numbers
-   }}
-4. Do NOT write files to `/workspace` (the filesystem is read-only; only `/tmp` is writable if needed).
-5. Do NOT use `print()` for debugging—all output must be inside the returned dictionary, and every value must be native Python types (`int`, `float`, `str`, `list`, `dict` — convert numpy/pandas scalars via `.item()` or `float()`/`int()`).
-
-## TOOL IMPLEMENTATION RULES
-- If tool == "sql": Use `import duckdb` and query `dataset_path` directly via SQL.
-- If tool == "python": Use `pandas` and `numpy` for filtering, grouping, and custom metrics.
-- If tool == "statistics": Use `scipy.stats` and include test statistics, p-values, and sample sizes.
-- Only use exact column names present in the Dataset Profile.
-        """
+RULES:
+1. Write a single function: `def analyze(dataset_path: str) -> dict:`
+2. ONLY use `pandas`, `numpy`, `scipy.stats`, `duckdb`, and Python's standard library. NEVER import `statsmodels` or `sklearn`, and NEVER run `pip install` or `subprocess`.
+3. Return a JSON-safe dict with this exact format:
+   {{"metrics": {{...}}, "sample_size": <int>, "summary": "<short summary>"}}
+4. Keep `metrics` small (only totals, averages, group stats, or p-values—never raw rows). When returning grouped tables, sort by `lost_mrr` or `customer_count` descending and return only the top 10 rows.
+5. Convert all NumPy keys and values (`np.int64`, `np.float64`, `np.bool_`) to plain Python `str()`, `int()`, `float()`, or `bool()`.
+6. Use Pandas 2+ syntax: use `df.corr(numeric_only=True)` and `.map()` (never `.applymap()`).
+7. Do NOT write files or use `print()`.
+8. Return ONLY Python code inside ```python ... ``` tags.
+9. For `statistics` steps, do NOT build logistic regression from scratch. Use `scipy.stats` (`mannwhitneyu`, `ttest_ind`, `pearsonr`, or `chi2_contingency`) to test each feature against the target and return test statistics and p-values."""
     ),
     (
         "human",
-        """
-## CURRENT ANALYSIS STEP
-{step}
-
-## DATASET PROFILE
-{dataset_profile}
-
-## PREVIOUS ERROR TO FIX (If any)
-{error_context}
-
-Generate the Python code containing `def analyze(input_data: dict) -> dict:`.
-        """
-    )
+        "Step to run: {step}\nDataset info: {profile}\nFix this error (if any): {error}"
+    ),
 ])
+
+VERIFIER_PROMPT = ChatPromptTemplate.from_messages([
+    (
+        "system",
+        """Audit the collected evidence.
+- Add every completed step's integer `step_id` from `evidence` into `verified_step_ids`.
+- Set `is_sufficient` to `True` if at least 2 steps have valid metrics.
+- Put any small-sample (n < 30), missing-data, or failed-step warnings in `caveats`. Always add a caveat if any highlighted segment has `customer_count < 10`.
+- Never invent numbers."""
+    ),
+    (
+        "human",
+        "Question: {question}\nSteps: {steps}\nEvidence: {evidence}\nErrors: {errors}"
+    ),
+])
+
+REPORT_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            "Write a clear business report answering the question using ONLY the numbers in `evidence`. Do not guess or invent numbers.",
+        ),
+        (
+            "human",
+            "Question: {question}\nGoal: {goal}\nEvidence: {evidence}\nVerification: {verification}\nErrors: {errors}",
+        ),
+    ]
+)
+
+
+# --- 2. SIMPLE HELPERS ---
+
+
+def clean_code(raw_text: str) -> str:
+    """Remove ```python and ``` markdown wrappers."""
+    if "```" in raw_text:
+        code = raw_text.split("```")[1]
+        if code.startswith("python"):
+            code = code[6:]
+        return code.strip()
+    return raw_text.strip()
+
+
+def simplify_profile(profile: dict) -> dict:
+    """Send only row count, missing counts, and column types to save LLM tokens."""
+    columns = {}
+    for col, info in profile.get("column_details", {}).items():
+        dtype = info.get("dtype") if isinstance(info, dict) else str(info)
+        columns[col] = {
+            "type": dtype,
+            "missing": profile.get("missing_values", {}).get(col, 0),
+        }
+
+    return {
+        "rows": profile.get("row_count"),
+        "duplicates": profile.get("duplicated_rows"),
+        "columns": columns,
+    }
+
+
+# --- 3. GRAPH NODES ---
 
 
 def generate_analysis_code(state: InvestigationState) -> dict:
+    """Node 1: Ask the LLM to write Python code for the current step."""
     steps = state["analysis_plan"]["steps"]
-    idx = state["current_analysis_step"]
-    current_step = steps[idx]
+    current_step = steps[state["current_analysis_step"]]
 
-    last_error = state.get("last_error")
-    error_context = (
-        f"Previous attempt failed with error:\n{last_error}\n\n"
-        f"Failing code:\n```python\n{state.get('current_code', '')}\n```\nFix the bug."
-        if last_error
-        else "None (first attempt)."
+    # If the previous run failed, pass the error so the LLM can fix it
+    error_text = "None"
+    if state.get("last_error"):
+        error_text = (
+            f"{state['last_error']}\n\nBroken code:\n{state.get('current_code', '')}"
+        )
+
+    response = (CODE_GEN_PROMPT | get_llm(fast=True)).invoke(
+        {
+            "step": current_step,
+            "profile": simplify_profile(state["dataset_profile"]),
+            "error": error_text,
+        }
     )
 
-    llm = get_llm().with_structured_output(GeneratedScript)
-    result = (CODE_GEN_PROMPT | llm).invoke({
-        "step": current_step,
-        "dataset_profile": state["dataset_profile"],
-        "error_context": error_context,
-    })
-
     return {
-        "current_code": result.python_code,
+        "current_code": clean_code(response.content),
         "last_error": None,
     }
 
-# In agent/nodes.py
-from .runner.runner_manager import run_analysis  # Adjust to your actual module path
-
 
 def execute_analysis_step(state: InvestigationState) -> dict:
+    """Node 2: Run the generated code inside Docker and save the result."""
     steps = state["analysis_plan"]["steps"]
     idx = state["current_analysis_step"]
     step = steps[idx]
-    retry_count = state.get("retry_count", 0)
+    retries = state.get("retry_count", 0)
 
-    run_res = run_analysis(
+    res = run_analysis(
         source_code=state["current_code"],
         dataset_file_path=state["dataset_file_path"],
         function_name="analyze",
         timeout=15,
     )
 
-    # Check failure from runner
-    if run_res.get("ok") is False or "error" in run_res:
-        error_msg = run_res.get("error", "Unknown sandbox execution error.")
-        next_retry = retry_count + 1
+    # CASE A: Code failed in Docker
+    if res.get("ok") is False or res.get("error"):
+        error_msg = res.get("error", "Unknown error")
+        logger.warning(
+            f"Step {step['step_id']} failed (try {retries + 1}/2): {error_msg}"
+        )
 
-        if next_retry >= 3:
-            failed_record = {
-                "step_id": step["step_id"],
-                "tool": step["tool"],
-                "status": "inconclusive",
-                "error": error_msg,
-            }
-            return {
-                "tool_execution_results": state.get("tool_execution_results", []) + [failed_record],
-                "errors": state.get("errors", []) + [f"Step {step['step_id']} failed after 3 attempts: {error_msg}"],
-                "current_analysis_step": idx + 1,
-                "retry_count": 0,
-                "last_error": None,
-            }
+        # Try once more if this was the first attempt
+        if retries == 0:
+            return {"retry_count": 1, "last_error": error_msg}
 
+        # Otherwise skip this step and move to the next one
         return {
-            "retry_count": next_retry,
-            "last_error": error_msg,
+            "tool_execution_results": state.get("tool_execution_results", [])
+            + [{"step_id": step["step_id"], "status": "failed", "error": error_msg}],
+            "errors": state.get("errors", [])
+            + [f"Step {step['step_id']}: {error_msg}"],
+            "current_analysis_step": idx + 1,
+            "retry_count": 0,
+            "last_error": None,
         }
 
-    # Unwrap if your runner wraps return value under "result" or "output"
-    payload = run_res.get("result") if isinstance(run_res.get("result"), dict) else run_res
+    # CASE B: Code succeeded
+    output = res.get("result") if isinstance(res.get("result"), dict) else res
 
-    execution_record = {
+    # Keep metrics under 2000 chars so later LLM calls don't hit token limits
+    metrics = output.get("metrics", output)
+    if len(json.dumps(metrics, default=str)) > 2000:
+        metrics = {"summary_text": json.dumps(metrics, default=str)[:2000] + "..."}
+
+    new_execution = {
         "step_id": step["step_id"],
-        "tool": step["tool"],
         "status": "completed",
         "code": state["current_code"],
-        "raw_output": payload,
+        "output": output,
     }
-    evidence_record = {
+    new_evidence = {
         "step_id": step["step_id"],
         "hypothesis": step["hypothesis"],
-        "metrics": payload.get("metrics", payload),
-        "sample_size": payload.get("sample_size", 0),
-        "summary": payload.get("summary", ""),
+        "metrics": metrics,
+        "sample_size": output.get("sample_size", 0),
+        "summary": output.get("summary", ""),
     }
 
     return {
-        "tool_execution_results": state.get("tool_execution_results", []) + [execution_record],
-        "evidence_collected": state.get("evidence_collected", []) + [evidence_record],
+        "tool_execution_results": state.get("tool_execution_results", [])
+        + [new_execution],
+        "evidence_collected": state.get("evidence_collected", []) + [new_evidence],
         "current_analysis_step": idx + 1,
         "retry_count": 0,
         "last_error": None,
     }
 
-# In agent/nodes.py
-from .schemas import VerificationReport, FinalInvestigationReport
-
-VERIFIER_PROMPT = ChatPromptTemplate.from_messages([
-    (
-        "system",
-        """
-You are a principal data scientist auditing investigation evidence before executive reporting.
-Inspect the analysis plan, collected evidence, and execution errors.
-Flag any step where sample_size < 30, where missing values may skew results, or where metrics contradict.
-Never invent metrics.
-        """
-    ),
-    (
-        "human",
-        "Question: {question}\nPlan: {plan}\nEvidence: {evidence}\nErrors: {errors}"
-    )
-])
-
-REPORT_PROMPT = ChatPromptTemplate.from_messages([
-    (
-        "system",
-        """
-You are a senior business analyst writing the final investigation report.
-Synthesize the verified evidence into a clear, decision-ready report.
-STRICT RULE: Every number you cite MUST appear verbatim in `evidence_collected`. Do not extrapolate or guess.
-        """
-    ),
-    (
-        "human",
-        "Question: {question}\nGoal: {goal}\nEvidence: {evidence}\nVerification: {verification}\nErrors: {errors}"
-    )
-])
-
 
 def verify_evidence(state: InvestigationState) -> dict:
-    llm = get_llm().with_structured_output(VerificationReport)
-    verification = (VERIFIER_PROMPT | llm).invoke({
-        "question": state["question"],
-        "plan": state["analysis_plan"],
-        "evidence": state.get("evidence_collected", []),
-        "errors": state.get("errors", []),
-    })
-    return {"verification_results": verification.model_dump()}
+    """Node 3: Check sample sizes and data quality before writing the report."""
+    llm = get_llm(fast=True).with_structured_output(VerificationReport)
+    result = (VERIFIER_PROMPT | llm).invoke(
+        {
+            "question": state["question"],
+            "steps": state["analysis_plan"]["steps"],
+            "evidence": state.get("evidence_collected", []),
+            "errors": state.get("errors", []),
+        }
+    )
+    return {"verification_results": result.model_dump()}
 
 
 def generate_final_report(state: InvestigationState) -> dict:
-    llm = get_llm().with_structured_output(FinalInvestigationReport)
-    report = (REPORT_PROMPT | llm).invoke({
-        "question": state["question"],
-        "goal": state["goal"],
-        "evidence": state.get("evidence_collected", []),
-        "verification": state.get("verification_results", {}),
-        "errors": state.get("errors", []),
-    })
+    """Node 4: Combine all verified evidence into the final business report."""
+    llm = get_llm(fast=False).with_structured_output(FinalInvestigationReport)
+    report = (REPORT_PROMPT | llm).invoke(
+        {
+            "question": state["question"],
+            "goal": state["goal"],
+            "evidence": state.get("evidence_collected", []),
+            "verification": state.get("verification_results", {}),
+            "errors": state.get("errors", []),
+        }
+    )
     return {"final_report": report.model_dump()}

@@ -4,11 +4,11 @@ from .state import InvestigationState
 from .schemas import AnalysisPlan
 from .llm import get_llm
 
-
-PLANNER_PROMPT = ChatPromptTemplate.from_messages([
-    (
-        "system",
-        """
+PLANNER_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            """
 You are a senior data analyst responsible for planning
 autonomous data investigations.
 
@@ -53,27 +53,30 @@ Choose only from these tools:
 - If the dataset cannot answer the question, identify the limitation.
 - Do not generate conclusions or fabricate results.
   Your task is planning, not executing the investigation.
+- For `statistics` steps, plan hypothesis tests supported by `scipy.stats` (Mann-Whitney U, t-test, Pearson correlation, or Chi-square), NOT multivariate logistic regression.
+## OUTPUT REQUIREMENTS
 
 ## OUTPUT REQUIREMENTS
 
 Return:
-- reasoning: Briefly explain why this investigation approach
-  was selected.
-- steps: An ordered list of analysis steps.
+- reasoning: Briefly explain why this investigation approach was selected (1–2 sentences).
+- steps: An ordered list of 3 to 4 focused analysis steps.
 
 Each step must contain:
-- step_id
+- step_id: Sequential integer starting at 1 (1, 2, 3, ...)
 - description
 - hypothesis
 - tool
 - expected_output
 
 Generate only the analysis plan using the required structured schema.
-        """
-    ),
-    (
-        "human",
-        """
+
+
+        """,
+        ),
+        (
+            "human",
+            """
 ## USER QUESTION
 {question}
 
@@ -84,12 +87,13 @@ Generate only the analysis plan using the required structured schema.
 {dataset_profile}
 
 Create an analysis plan for this investigation.
-        """
-    )
-])
+        """,
+        ),
+    ]
+)
 
 
-def create_analysis_plan(state: InvestigationState)->dict:
+def create_analysis_plan(state: InvestigationState) -> dict:
     dataset_profile = state.get("dataset_profile")
     question = state.get("question")
     goal = state.get("goal")
@@ -104,13 +108,8 @@ def create_analysis_plan(state: InvestigationState)->dict:
 
     chain = PLANNER_PROMPT | llm
 
-    plan = chain.invoke({
-        "question": question,
-        "goal": goal,
-        "dataset_profile": dataset_profile
-    })
+    plan = chain.invoke(
+        {"question": question, "goal": goal, "dataset_profile": dataset_profile}
+    )
 
-    return {
-        "analysis_plan": plan.model_dump(),
-        "current_analysis_step": 0
-    }
+    return {"analysis_plan": plan.model_dump(), "current_analysis_step": 0}

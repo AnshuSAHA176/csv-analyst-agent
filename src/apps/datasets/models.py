@@ -58,7 +58,14 @@ class DatasetProfile(models.Model):
 
     class Meta:
         indexes = [models.Index(fields=["profiled_at"])]
-
+    def to_dict(self) -> dict:
+        return {
+            "row_count": self.row_count,
+            "column_count": self.column_count,
+            "duplicated_rows": self.duplicated_rows,
+            "missing_values": self.missing_values,
+            "column_details": self.column_details,
+        }
     def __str__(self):
         return f"data_set:- {self.dataset.name}"
 

@@ -1,4 +1,3 @@
-
 import uuid
 
 from django.db import models
@@ -39,6 +38,13 @@ class Investigation(models.Model):
         choices=Status.choices,
         default=Status.PENDING
     )
+
+    # Investigation outputs & audit trail
+    analysis_plan = models.JSONField(default=dict, blank=True)
+    evidence_collected = models.JSONField(default=list, blank=True)
+    verification_results = models.JSONField(default=dict, blank=True)
+    final_report = models.JSONField(default=dict, blank=True)
+    errors = models.JSONField(default=list, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True, blank=True)
