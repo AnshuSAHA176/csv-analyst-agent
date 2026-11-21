@@ -1,4 +1,6 @@
-from typing import TypedDict, Any
+from typing import TypedDict, Any,Annotated
+import operator
+
 
 
 class InvestigationState(TypedDict):
@@ -13,7 +15,7 @@ class InvestigationState(TypedDict):
     current_analysis_step: int
 
     tool_execution_results: list[dict[str, Any]]
-    evidence_collected: list[dict[str, Any]]
+    evidence_collected: Annotated[list[dict],operator.add]
 
     verification_results: dict[str, Any]
     final_report: dict[str, Any]
@@ -22,3 +24,4 @@ class InvestigationState(TypedDict):
     current_code: str
     retry_count: int
     last_error: str | None
+    replan_count:int

@@ -22,8 +22,8 @@ RULES:
 2. ONLY use `pandas`, `numpy`, `scipy.stats`, `duckdb`, and Python's standard library. NEVER import `statsmodels` or `sklearn`, and NEVER run `pip install` or `subprocess`.
 3. Return a JSON-safe dict with this exact format:
    {{"metrics": {{...}}, "sample_size": <int>, "summary": "<short summary>"}}
-4. Keep `metrics` small (only totals, averages, group stats, or p-values—never raw rows). When returning grouped tables, sort by `lost_mrr` or `customer_count` descending and return only the top 10 rows.
-5. Convert all NumPy keys and values (`np.int64`, `np.float64`, `np.bool_`) to plain Python `str()`, `int()`, `float()`, or `bool()`.
+4. Keep `metrics` small (only totals, averages, group stats, or p-values—never raw rows). For grouped tables, sort descending by the target metric and include the top 10 rows with all group column names using `json.loads(grouped_df.head(10).to_json(orient="records"))`.
+5. Convert DataFrames/Series to JSON-safe Python types with `json.loads(df.to_json(orient="records"))` or `int()`/`float()`/`str()` on scalars. Never run `.map(float)` across mixed string/numeric DataFrames.
 6. Use Pandas 2+ syntax: use `df.corr(numeric_only=True)` and `.map()` (never `.applymap()`).
 7. Do NOT write files or use `print()`.
 8. Return ONLY Python code inside ```python ... ``` tags.
@@ -40,8 +40,12 @@ VERIFIER_PROMPT = ChatPromptTemplate.from_messages([
         "system",
         """Audit the collected evidence.
 - Add every completed step's integer `step_id` from `evidence` into `verified_step_ids`.
-- Set `is_sufficient` to `True` if at least 2 steps have valid metrics.
-- Put any small-sample (n < 30), missing-data, or failed-step warnings in `caveats`. Always add a caveat if any highlighted segment has `customer_count < 10`.
+- Put any small-sample (n < 30), missing-data, or failed-step warnings in `caveats`.
+- Set `is_sufficient` to `False` if:
+  (a) a core step failed, OR
+  (b) the question asks for specific top/worst segments/categories and `evidence` only gives counts without naming the actual groups, OR
+  (c) highlighted segments have `n < 10` and need broader grouping.
+  Otherwise set `is_sufficient` to `True`.
 - Never invent numbers."""
     ),
     (
@@ -54,7 +58,7 @@ REPORT_PROMPT = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "Write a clear business report answering the question using ONLY the numbers in `evidence`. Do not guess or invent numbers.",
+            "Write a clear business report answering the question using ONLY the numbers in `evidence`. Check every sub-group number before generalizing across all tiers—if one tier behaves differently, state the exception explicitly. Do not guess or invent numbers.",
         ),
         (
             "human",
@@ -184,7 +188,7 @@ def execute_analysis_step(state: InvestigationState) -> dict:
     return {
         "tool_execution_results": state.get("tool_execution_results", [])
         + [new_execution],
-        "evidence_collected": state.get("evidence_collected", []) + [new_evidence],
+        "evidence_collected": [new_evidence],
         "current_analysis_step": idx + 1,
         "retry_count": 0,
         "last_error": None,
@@ -193,16 +197,29 @@ def execute_analysis_step(state: InvestigationState) -> dict:
 
 def verify_evidence(state: InvestigationState) -> dict:
     """Node 3: Check sample sizes and data quality before writing the report."""
+    evidence = state.get("evidence_collected", [])
+    errors = state.get("errors", [])
+
+    # Always extract verified step IDs deterministically
+   
+
     llm = get_llm(fast=True).with_structured_output(VerificationReport)
     result = (VERIFIER_PROMPT | llm).invoke(
         {
             "question": state["question"],
             "steps": state["analysis_plan"]["steps"],
-            "evidence": state.get("evidence_collected", []),
-            "errors": state.get("errors", []),
+            "evidence": evidence,
+            "errors": [err[-400:] for err in errors],
         }
     )
-    return {"verification_results": result.model_dump()}
+    report = result.model_dump()
+    report["verified_step_ids"] = sorted({item["step_id"] for item in evidence if "step_id" in item})
+
+    # Guarantee re-plan on first pass if any step failed or caveats were raised
+    if state.get("replan_count", 0) == 0 and (errors or report.get("caveats")):
+        report["is_sufficient"] = False
+
+    return {"verification_results": report}
 
 
 def generate_final_report(state: InvestigationState) -> dict:
@@ -214,7 +231,7 @@ def generate_final_report(state: InvestigationState) -> dict:
             "goal": state["goal"],
             "evidence": state.get("evidence_collected", []),
             "verification": state.get("verification_results", {}),
-            "errors": state.get("errors", []),
+            "errors": [ err[-400:] for err in state.get("errors", [])],
         }
     )
     return {"final_report": report.model_dump()}

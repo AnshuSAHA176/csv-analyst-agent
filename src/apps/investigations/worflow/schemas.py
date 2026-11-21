@@ -20,6 +20,11 @@ class AnalysisPlan(BaseModel):
         description="Why this investigation approach was selected.",
     )
     steps: list[AnalysisStep] = Field(min_length=1, max_length=4)
+class RecoveryAnalysisPlan(BaseModel):
+    reasoning: str = Field(
+        description="Why this investigation approach was selected.",
+    )
+    steps: list[AnalysisStep] = Field(min_length=1, max_length=2)
 
 
 # In schemas.py
