@@ -7,7 +7,9 @@ from .schemas import VerificationReport, FinalInvestigationReport
 from .llm import get_llm
 from .runner.runner_manager import run_analysis
 
+
 logger = logging.getLogger(__name__)
+
 
 
 # --- 1. PROMPTS ---
@@ -196,26 +198,34 @@ def execute_analysis_step(state: InvestigationState) -> dict:
 
 
 def verify_evidence(state: InvestigationState) -> dict:
-    """Node 3: Check sample sizes and data quality before writing the report."""
     evidence = state.get("evidence_collected", [])
     errors = state.get("errors", [])
-
-    # Always extract verified step IDs deterministically
-   
+    completed_ids = sorted({item["step_id"] for item in evidence if "step_id" in item})
 
     llm = get_llm(fast=True).with_structured_output(VerificationReport)
-    result = (VERIFIER_PROMPT | llm).invoke(
-        {
-            "question": state["question"],
-            "steps": state["analysis_plan"]["steps"],
-            "evidence": evidence,
-            "errors": [err[-400:] for err in errors],
-        }
-    )
-    report = result.model_dump()
-    report["verified_step_ids"] = sorted({item["step_id"] for item in evidence if "step_id" in item})
+    chain = (VERIFIER_PROMPT | llm).with_retry(stop_after_attempt=3)
 
-    # Guarantee re-plan on first pass if any step failed or caveats were raised
+    try:
+        result = chain.invoke(
+            {
+                "question": state["question"],
+                "steps": state["analysis_plan"]["steps"],
+                "evidence": evidence,
+                "errors": [err[-400:] for err in errors],
+            }
+        )
+        report = result.model_dump()
+    except Exception as exc:
+        logger.warning("Verifier structured output failed, falling back: %s", exc)
+        report = {
+            "is_sufficient": False,
+            "verified_step_ids": completed_ids,
+            "caveats": [
+                "Verification step hit a structured-output formatting error; running recovery check."
+            ],
+        }
+
+    report["verified_step_ids"] = completed_ids
     if state.get("replan_count", 0) == 0 and (errors or report.get("caveats")):
         report["is_sufficient"] = False
 

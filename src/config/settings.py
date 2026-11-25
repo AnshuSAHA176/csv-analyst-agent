@@ -26,6 +26,7 @@ ALLOWED_HOSTS = []
 
 # Application definition
 INSTALLED_APPS = [
+    "daphne",
     # Django apps
     "django.contrib.admin",
     "django.contrib.auth",
@@ -37,6 +38,7 @@ INSTALLED_APPS = [
     # Third-party
     "rest_framework",
     'adrf',
+    "channels",
 
     # Local apps
     "apps.accounts",
@@ -73,7 +75,7 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = 'config.wsgi.application'
+ASGI_APPLICATION = 'config.asgi.application'
 
 
 # Database
@@ -154,3 +156,12 @@ cloudinary.config(
 # settings.py
 CELERY_BROKER_URL = 'redis://localhost:6379/0'
 CELERY_RESULT_BACKEND = 'redis://localhost:6379/1'
+
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {
+            "hosts": [os.getenv("REDIS_URL", "redis://127.0.0.1:6379/1")],
+        },
+    },
+}

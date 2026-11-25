@@ -43,14 +43,21 @@ def create_analysis_plan(state: InvestigationState) -> dict:
     schema = RecoveryAnalysisPlan if is_replan else AnalysisPlan
     llm = get_llm().with_structured_output(schema)
 
-    plan = (PLANNER_PROMPT | llm).invoke(
-        {
-            "question": state["question"],
-            "goal": state["goal"],
-            "dataset_profile": state["dataset_profile"],
-            "feedback": feedback,
-        }
+    plan = (
+        (PLANNER_PROMPT | llm)
+        .with_retry(stop_after_attempt=2)
+        .invoke(
+            {
+                "question": state["question"],
+                "goal": state["goal"],
+                "dataset_profile": state["dataset_profile"],
+                "feedback": feedback,
+            }
+            # keep your existing input dict here
+        )
     )
+    if is_replan and len(plan.steps) > 2:
+        plan.steps = plan.steps[:2]
 
     return {
         "analysis_plan": plan.model_dump(),
